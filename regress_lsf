@@ -1,0 +1,628 @@
+#!/cadtools/Mentor/cal_2020.3_16.11/bin/python3
+
+import os, re,json
+import random
+import subprocess, time, datetime, signal
+import argparse
+from glob import glob
+import pdb
+#import json
+
+cur_work_dir = os.path.abspath('.')
+os.environ['VCS_RUN_DIR'] = cur_work_dir
+output_dir = os.path.join('%s'%cur_work_dir, 'output')
+file_tb = os.path.join('%s'%cur_work_dir, 'filelist_intergration.f')
+compile_testbench_filelist = " -F " + file_tb
+vcs_path = os.environ['VCS_HOME']
+verdi_path = os.environ['NOVAS_HOME']
+dc_path = os.environ['DC_HOME']
+#pdb.set_trace();
+vcs_filelist = " +incdir+%s/etc/uvm-1.1/src %s/etc/uvm-1.1/src %s/etc/uvm-1.1/src/uvm.sv %s/etc/uvm-1.1/src/uvm_pkg.sv %s/etc/uvm-1.1/src/uvm_macros.svh %s/etc/uvm-1.1/src/dpi/uvm_dpi.cc "%(vcs_path, vcs_path, vcs_path, vcs_path, vcs_path, vcs_path)
+verdi_filelist = " -P %s/share/PLI/VCS/LINUX64/novas.tab %s/share/PLI/VCS/LINUX64/pli.a "%(verdi_path, verdi_path)
+dpi_c_filelist = " %s/ddr_file_compare_wrap.c "%(cur_work_dir)
+dc_filelist = " -y %s/dw/sim_ver +incdir+%s/dw/sim_ver +libext+.v "%(dc_path, dc_path)
+common_compile_opts = " +incdir+%s +incdir+%s -full64 -sverilog -CFLAGS -DVCS -timescale=1ns/10ps +vpi -l %s/cmp.log -kdb -lca -debug_access+all -LDFLAGS -Wl,-no-as-needed +define+UVM_NO_DEPRECATED+UVM_OBJECT_MUST_HAVE_CONSTRUCTOR +define+ASSERT_ON "%(cur_work_dir, output_dir, output_dir)
+common_compile_opts += vcs_filelist
+common_compile_opts += verdi_filelist
+common_compile_opts += dpi_c_filelist
+common_compile_opts += compile_testbench_filelist
+
+def help():
+  hlp = """
+   format for input single test run multi-times or tests list :
+      run -t test1:x10, test2:x5  -> means test1 run 10 times with different seeds, test2 run 5 times with different seeds
+      run -t test1:1000, test2:x5 -> means test1 run 1 time, seed=1000 test2 run 5 times with random seed 
+   format for case_file is :
+     `include another_casefile.list
+     or 
+     test0:x100
+     test1:x100
+     .....
+  """
+  print(hlp)
+parser = argparse.ArgumentParser()
+parser.add_argument('-t','--test', type=str, help='specifies the casename: -t casename:x5 or -t case:seed')
+parser.add_argument('-f','--file', type=str, help='specifies the casefile: -f regress.file')
+parser.add_argument('-cf','--config_file', type=str, help="vcs compile/runtime option files")
+parser.add_argument('-ts','--timescale', type=str, help="override timescal")
+parser.add_argument('-m','--module', type=str, help='specifies module name')
+parser.add_argument('-M','--mode', type=str, help='specifies modes')
+parser.add_argument('-covdir', type=str, help='specifies sim.vdb dir')
+parser.add_argument('-cvf','--covdir_filelist', type=str, help='specifies filelist which contain sim.vdb from different dirs')
+parser.add_argument('-v','--verbosity', type=str, default="UVM_LOW", help="uvm verbosity")
+parser.add_argument('-to','--timeout', type=int, default=240, help="simulation timeout by arg")
+parser.add_argument('-plan', type=str, help="specifies hvp/xml file")
+parser.add_argument('-cmp_opts', "--cmp_options",type=str, default='' , help="add cmp options for vcs")
+parser.add_argument('-sim_opts', "--sim_options",type=str, default='' , help="add sim options for vcs")
+parser.add_argument('-e','--env_config', type=str, default='env_config.json', help="vcs compile/runtime option files")
+parser.add_argument('-el','--exclude_file', type=str, help="specifies el file used for coverage exclude")
+parser.add_argument('-mj','--max_jobs', type=int, default=30, help="max jobs number can submit")
+parser.add_argument('-oc', "--only_compile", action='store_true', help="only compile, not run")
+parser.add_argument('-nc', "--not_compile", action='store_true', default=False, help="not_compile when start to run")
+parser.add_argument('-dump' , action='store_true', help="enable dump fsdb")
+parser.add_argument('-verdi', action='store_true', help="Open Verdi")
+parser.add_argument('-coverage', action='store_true', help="Open coverage statics")
+parser.add_argument('-gui'  , action='store_true', help="Open DVE")
+parser.add_argument('-cov'  , action='store_true', help="collect coverage")
+parser.add_argument('-upf'  , action='store_true', help="run with upf")
+parser.add_argument('-dbg'  , action='store_true', default=True, help="opt for Simulation performance")
+parser.add_argument('-partcomp', action='store_true', default=False, help="use partition compile")
+parser.add_argument('-csr', action='store_true', help="generate csr for rtl and ral")
+parser.add_argument('-rt','--regression_times', type=int, default=1, help="can multiply regression times")
+
+args = parser.parse_args()
+
+class testcase:
+  def __init__(self):
+    self.name = 'sanity'
+    self.times= 1
+    self.seeds=[]
+    self.logdir = []
+    self.cmp_opts = ""
+    self.sim_opts = ""
+  def prt(self, verbosity = 0):
+    if verbosity:
+      desc = '{:<20} {:<32} {:<20}\n'.format('name', 'seed', 'logdir')
+      for i in range(self.times):
+        desc += 'name:{:<20} seed:{:<32} logdir:{:<20}\n'.format(self.name, self.seeds[i], self.logdir[i])
+      print(desc)
+
+  def set_attrs(self, name=''):
+    """
+      case0       --> [name=case0, seed=0     , runtimes=1  ] 
+      case0:x100  --> [name=case0, seed=random, runtimes=100] 
+      case0:1000  --> [name=case0, seed=1000  , runtimes=1  ] 
+      case0:1000 -cmp_opts copts0 -sim_opts sopts0  --> [name=case0, seed=1000  , runtimes=1, plus compile options and sim options] 
+    """
+    attr = name.split(':')
+    self.name = attr[0].strip()
+    if attr.__len__() > 1:
+      mult_times = re.match(r'^x([0-9]+)', attr[1].strip(), re.I)
+      if mult_times:
+        self.times = int(mult_times.group(1))*args.regression_times
+        self.set_seed()
+      else:
+        self.seeds.append(int(attr[1].strip().split(' ')[0]))
+        self.set_logdir(int(attr[1].strip().split(' ')[0]))
+    else:
+      self.seeds.append(0)
+      self.set_logdir()
+    opts = name.split('-')
+    if opts.__len__() > 1:
+      for opt in opts[1:]:
+        self.get_opts(opt.strip())
+      
+  def get_opts(self, name):
+    if name == "":
+      return
+      """
+    if re.match("^cmp_opts", name.strip(), re.I):
+      self.cmp_opts = ' '.join(name.strip().split(' ')[1:])
+      """
+    if re.match('^sim_opts', name.strip(), re.I):
+      self.sim_opts = ' '.join(name.strip().split(' ')[1:])
+  
+  def set_seed(self):
+    for i in range(self.times):
+      seed = random.randint(0, 1<<32)
+      self.seeds.append(seed)
+      self.set_logdir(seed)
+
+  def set_logdir(self, seed=0, parent='/'):
+    self.logdir.append('_'.join([self.name, str(seed)]))
+
+class sim_env():
+  def __init__(self, args):
+    self.workdir = ''
+    self.currdir = ''
+    self.opts_dir = ''
+    self.case_pool = [] #list of testcase type
+    self.regress_time = 0
+    self.interval = 1
+    self.doze = 20
+    self.sim_opts = ''
+    self.cmp_opts = ''
+    self.rerun_num = 5
+
+    if isinstance(args, argparse.Namespace):
+      self.args = args
+    else:
+      print("args type not ", type(argparse.Namespace))
+      exit(1)
+    self.max_jobs = self.args.max_jobs
+
+  def get_cases(self, cases='', verbosity=0):
+    tests = cases.strip().split(',')
+    for desc in tests:
+      test = testcase()
+      test.set_attrs(desc)
+      test.prt(verbosity)
+      self.case_pool.append(test)
+
+  def getCasesFromFile(self, fname='', verbosity=0):
+    """
+    regress file format, specifies the case_name, run_times, like the following
+    case_name1:x10 -cmp_opts=copts0 -sim_opts=sopts0
+    case_name2:x10
+    or
+    case_name1:102031
+    case_name2:x10
+    or
+    `include from_other_files
+    """
+    if fname == '':
+      print("testcase filename is empty!!")
+      exit(1)
+    tfile = os.path.join('%s'%cur_work_dir, fname)
+    if not os.path.exists(tfile):
+        print("%s not found in %s"%(fname, cur_work_dir))
+        exit(1)
+    try:
+      with open(tfile) as tf:
+        for line in tf:
+          line = line.strip()
+          if len(line) == 0 or re.match(r'^//.*', line) or re.match(r'^#.*', line):
+            continue
+          #myinclude = re.match(r'`*include\s+"*([\w\.]+)"*', line)
+          myinclude = re.match(r'`*include\s+"*(.*)"', line)
+          if myinclude:
+            self.getCasesFromFile(myinclude.group(1))
+            continue
+          self.get_cases(line, verbosity)
+    except:
+      print(tfile, "can't be opened!!")
+      exit(1)
+
+  def set_cmp_opts(self, regress = False, opts = ""):
+    self.cmp_opts = common_compile_opts
+    if not regress:
+      self.add_cmp_opts('+define+PRINT_DETAIL')
+    if self.args.cov:
+      self.add_cmp_opts('+define+NPU_FUNC_COV_ON')
+      self.add_cmp_opts('-cm line+cond+tgl+fsm+branch+assert')
+    if self.args.timescale != None:
+      self.add_cmp_opts('-timescale='+self.args.timescale)
+    #"""
+    #if test run more than one time, or regress is True => 
+    #test1:x100
+    #"""
+    if self.args.cmp_options is not '':
+      self.add_cmp_opts(self.args.cmp_options)
+    if opts != "":
+      self.add_cmp_opts(opts)
+
+  def add_cmp_opts(self, opts=""):
+    if opts != '':
+      self.cmp_opts = ' '.join([self.cmp_opts, opts])
+
+  def set_sim_opts(self, regress=False, opts=""):
+    if regress:
+      self.add_sim_opts('+vcs+nostdout')
+      self.add_sim_opts('+vcs+lic+wait')
+    if self.args.cov:
+      self.add_sim_opts('-cm line+cond+tgl+fsm+branch+assert')
+    if self.args.gui:
+      self.add_sim_opts('-gui=verdi')
+    if regress:
+      self.add_sim_opts('+UVM_VERBOSITY=UVM_NONE')
+    else:
+      self.add_sim_opts('+UVM_VERBOSITY=%s' % self.args.verbosity)
+    if self.args.sim_options is not None:
+      self.add_sim_opts(self.args.sim_options)
+    if self.args.dump:
+      self.add_sim_opts('+fsdb+autoflush -ucli -do %0s/wave.tcl'%(cur_work_dir))
+    if opts != "":
+      self.add_sim_opts(opts)
+  def add_sim_opts(self, opts=''):
+    if opts != '':
+      self.sim_opts = ' '.join([self.sim_opts, opts])
+
+  def open_verdi(self):
+    if not os.path.exists(file_tb):
+      print("tb.f:%s not found!" % file_tb)
+      return False
+    #os.system('verdi -f tb.f -guiConf rclnovas.conf -sv -sswr tmp.rc -undockWin &')
+    verdi_dir = os.path.join('%s'%output_dir, 'verdiLog')
+    vdCmd = 'verdi -f %0s -sv -2012 -ntb_opts uvm -nologo' % file_tb
+    if self.args.cmp_options is not None:
+      vdCmd += ' ' + self.args.cmp_options + ' '
+    if self.args.sim_options is not None:
+      vdCmd += ' ' + self.args.sim_options + ' '
+    if not os.path.exists(verdi_dir):
+      os.makedirs(verdi_dir)
+    vdCmd += self.args.sim_options + ' &'
+    os.chdir(verdi_dir)
+    os.system(vdCmd)
+    os.chdir(cur_work_dir)
+    return True
+
+  def set_workdir(self, regress=False):
+    self.workdir = output_dir
+    if regress:
+      self.workdir = os.path.join(output_dir, 'regress'+'_'+datetime.datetime.today().strftime('%Y%m%d%H%M'))
+      os.environ['REGR_DIR'] = self.workdir;
+    else:
+      self.workdir = output_dir
+    if not os.path.exists(self.workdir):
+      os.makedirs(self.workdir)
+    if regress:
+      latest = os.path.join(output_dir, 'latest')
+      os.system("ln -snf %s %s"%(self.workdir,latest))
+  
+  def vcs_cmp(self, regress=False):
+    #vcs_cmd = ' '.join(['vcs', self.cmp_opts,' -CFLAGS \"-I/home/qinxuan/trunk/SVN_6_27_C/02-Project/01-CNN/02-Src/trunk/03-UVM_Framework/Intergration\"'])
+    vcs_cmd = ' '.join(['vcs', self.cmp_opts])
+    if regress:
+      os.system("rm -rf csrc simv.daidir cmp.log simv vc_hdrs.h")
+    print(vcs_cmd);
+    #os.system(vcs_cmd)
+
+    os.putenv("PWD","../")
+    myenv = os.environ
+    proc = subprocess.Popen(vcs_cmd, shell=True,env=myenv)
+    try:
+      proc.wait()
+      if proc.returncode != 0:
+        print("\n VCS Compile Failed!\n")
+        return False
+      else:
+        print('\n VCS Compile Process Done!!!')
+        return True
+    except KeyboardInterrupt:
+      proc.kill()
+      print('\n VCS Compile Process Killed by User!!!')
+      return False
+
+  def vcs_sim(self, case_name, case_seed, logdir='.', plus_opts='', regress = False, rerun = False):
+    logdir = os.path.join(self.workdir, logdir)
+    if(self.args.not_compile):
+      simv = os.path.join(self.workdir, '../simv')
+    else:
+      simv = os.path.join(self.workdir, 'simv')
+    if not os.path.isdir(logdir):
+      os.mkdir(logdir)
+    currdir = os.getcwd()
+    os.chdir(logdir)
+    if(regress):
+        vcs_cmd = ' '.join(["bsub -q dig_fe",simv, self.sim_opts, plus_opts, '+UVM_TESTNAME='+case_name, '+ntb_random_seed='+str(case_seed), '-l  %s/%0s.log' % (logdir, 'rerun' if rerun else 'run')])
+        proc = subprocess.Popen(vcs_cmd, shell=True,stdout=subprocess.PIPE)
+    else:
+        vcs_cmd = ' '.join([simv, self.sim_opts, plus_opts, '+UVM_TESTNAME='+case_name, '+ntb_random_seed='+str(case_seed), '-l  %s/%0s.log' % (logdir, 'rerun' if rerun else 'run')])
+        proc = subprocess.Popen(vcs_cmd, shell=True)
+    
+    os.chdir(currdir)
+    lsf_bsub_out = proc.stdout.readline
+    for info in iter(lsf_bsub_out,b''):
+      #print(info)
+      info = info.decode()
+      info = str(info.rstrip('\n'))
+    return (proc,logdir,info)
+
+  def check_log(self, log):
+    print("check log in")
+    marker = 'PASSED'
+    keywords_for_error = ['UVM_ERROR', 'UVM_FATAL', 'Error', 'failed']
+    finish = False
+    with open(log, 'r') as rpt:
+      for line in rpt:
+        if re.search('UVM Report', line):
+          finish = True
+        if not finish:
+          for keyword in keywords_for_error:
+            if re.search(keyword, line):
+              marker = "FAILED"
+          
+          #if re.search('UVM_ERROR', line) or re.search('UVM_FATAL', line) or re.search('Error', line):
+          #  marker = 'FAILED'
+      if not finish:
+        marker = 'NOT FINISHED'
+      if not self.regress:
+        print('{:<10}{:<25}{:<10}'.format('==========','=========================','=========='))
+        print('{:<10}{:<25}{:<10}'.format('          ','TEST %s' % marker, '          '))
+        print('{:<10}{:<25}{:<10}'.format('==========','=========================','=========='))
+      print(log, ' TC ', marker)
+      return marker
+
+
+    search_path = os.path.join(self.proj_root, 'verif/cfg')
+    if os.path.isfile(fname): # file's location is current directry
+      optfile = fname
+    else:
+      optfile = os.path.join(search_path, fname)
+    if not os.path.isfile(optfile):
+      print(optfile, ' not found!!')
+      exit(1)
+    try :
+      with open(optfile) as opts:
+        for opt in opts:
+          if opt is ' ' or re.match(r'^ *// *\w+', opt) or re.match(r'^ *# *\w+', opt):
+            continue
+          self.add_cmp_opts(opt)
+      if verbosity:
+        print('cmp_opts:', self.cmp_opts)
+        print('sim_opts:', self.sim_opts)
+    except:
+      print("Can't open ", fname)
+      exit(1)
+
+  def rerun_from_err_rpt(self, err_rpt, regress = False):
+    if not regress:
+      return 
+    if not os.path.isfile(err_rpt):
+      print(err_rpt, ' not found in ', os.getcwd())
+      return False
+    err_tc = []
+    regress_time = 0
+    with open(err_rpt, 'r') as rpt:
+      with open("rpt", 'w+') as fd:
+        wave = os.path.join(cur_work_dir, 'wave.tcl')
+        opts = self.sim_opts.split(' ')
+        for i in range(opts.__len__()):
+          if re.search('UVM_VERBOSITY', opts[i]):
+            opts[i] = '+UVM_VERBOSITY=UVM_MEDIUM'
+#opts[i] = '+UVM_VERBOSITY=UVM_MEDIUM'
+        self.sim_opts = ' '.join(opts)
+        sim_opts = '-ucli -do %s' % wave
+        jobs = {}
+        for line in rpt:
+          case_name = line.strip().split(':')[0].strip()
+          case_seed = line.strip().split(':')[1].strip()
+          logdir    = case_name+'_'+case_seed
+          msgs = line.strip()
+          if case_name not in err_tc:
+            err_tc.append(case_name)
+            if err_tc.__len__() < self.rerun_num:
+              msgs = "{:<25} wave_dumped".format(msgs)
+              jobs[logdir] = self.vcs_sim(case_name, case_seed, logdir, sim_opts, False, True)
+          fd.write(msgs+'\n')
+        try:
+          #print("All rerun Jobs submitted! Waiting...")
+          start_time = time.time()
+          while len(jobs) > 0:
+            for test, (proc, logdir,lsf_bsub_out) in list(jobs.items()):
+              msgs = ""
+              if regress_time > self.args.timeout:
+                print("Timeout! Kill Process:%s"%test)
+                proc.kill()
+              if proc.poll() == None:
+                continue
+              jobs.pop(test)
+            if regress:
+              time.sleep(self.doze)
+            curr_time = time.time()
+            if curr_time - start_time > 60:
+              regress_time += 1
+              for key in jobs.keys():
+                print("Jobs Rerunning...->"+key)
+              start_time = curr_time
+        except KeyboardInterrupt:
+          for test, (proc, logdir,lsf_bsub_out) in list(jobs.items()):
+            proc.kill()
+          time.sleep(1)
+          print("   VCS Rerun Killed by User!")
+
+      os.system('cp rpt %s;rm rpt' % err_rpt)
+      return True
+
+  def run(self):
+    self.regress= False
+    if self.args.verdi:
+      return self.open_verdi()
+    # ParseTestcase
+    if self.args.only_compile:
+      pass
+    elif self.args.test != None:
+      self.get_cases(self.args.test, 0)
+    elif self.args.file!= None:
+      self.getCasesFromFile(self.args.file)
+    else:
+      return False
+
+    if self.args.only_compile:
+      self.regress = False
+    elif self.case_pool.__len__() > 1:
+      self.regress = True
+    elif self.case_pool[0].times > 1:
+      self.regress = True
+    self.set_workdir(self.regress)
+    os.chdir(self.workdir)
+    #add plus compile options
+    self.set_cmp_opts(self.regress)
+    self.set_sim_opts(self.regress)
+    for case in self.case_pool:
+      self.add_cmp_opts(case.cmp_opts)
+      
+    if self.args.only_compile:
+      if not self.vcs_cmp(self.regress):
+        return False
+      else:
+        return True
+
+    if not self.args.not_compile:
+      if not self.vcs_cmp(self.regress):
+        return False
+
+    # open reprot file
+    fully_report = os.path.join(self.workdir, 'fully_report.rpt')
+    error_report = os.path.join(self.workdir, 'error_report_%0s.rpt'%datetime.datetime.today().strftime("%Y%m%d%H%M"))
+
+    # start submit jobs to server
+    jobs = {}
+    total = 0
+    failed = 0
+    with open(fully_report,'w+') as rpt:
+      for case in self.case_pool:
+        assert(case.seeds.__len__() == case.times)
+        for i in range(case.times):
+          total += 1
+          runtime_opts = ""
+          print("Submitting Job: {:<15} : {:>15}".format(case.name, str(case.seeds[i])))
+          if self.args.cov:
+            runtime_opts = "%s -cm_name %s_%0d"%(case.sim_opts, case.name, case.seeds[i])
+          else:
+            runtime_opts = "%s"%(case.sim_opts)
+          jobs[case.logdir[i]] = self.vcs_sim(case.name, case.seeds[i], case.logdir[i], runtime_opts, self.regress)
+          try :
+            time.sleep(self.interval)
+            self.check_jobs(report=rpt, jobs=jobs, max_jobs=self.max_jobs, verbosity=0)
+          except KeyboardInterrupt:
+            for test, (proc, logdir,lsf_bsub_out) in list(jobs.items()):
+              #proc.send_signal(signal.SIGINT)
+              #proc.wait(10)
+              proc.kill()
+              print("%s:%s in %s was killed!" % (test, proc, logdir))
+            time.sleep(1)
+            if self.regress:
+              os.system("bkill 0")
+              rpt.close()
+            print('\n VCS Regression Killed by User!')
+            return False
+          if self.regress_time > self.args.timeout:
+            break
+        if self.regress_time > self.args.timeout:
+          break
+
+      try:
+        print("All Jobs Submitted. Waiting %0d to finish!"%(len(jobs)))
+        self.check_jobs(rpt, jobs, 0, 1)
+        print("Bravo!! All jobs completed!")
+      except KeyboardInterrupt:
+        for test, (proc,logdir,lsf_bsub_out) in list(jobs.items()):
+          #proc.send_singal(signal.SIGINT)
+          proc.kill()
+        time.sleep(1)
+        print('/n=========================================================')
+        print('    VCS simulation killed by user!')
+        print('=========================================================')
+        return False
+
+    # catch error message from fully_report
+    if self.regress:
+      with open(fully_report, 'r') as rpt:
+        with open(error_report, 'w+') as err_rpt:
+          for line in rpt:
+            if line.strip() and not re.search('PASSED', line, re.I):
+              failed += 1
+              desc = line.strip().split(' ')[0].strip().split('_')
+              err_rpt.write(':'.join(['_'.join(desc[:-1]),desc[-1]])+'\n')
+    else:
+      os.system('rm %s' % (fully_report))
+      if os.path.isfile(error_report):
+        os.system('rm %s' % (error_report))
+
+    if self.regress_time > self.args.timeout :
+      print('/n*************************************')
+      print('      VCS simulation killed due to timeout')
+      print('/n*************************************')
+      os.chdir(cur_work_dir)
+      return False
+    with open(fully_report, 'a') as fd:
+      summary_msgs = "\n\n=============================================\n"
+      summary_msgs += "{:<12} {:<12} {:>12}".format('total:%0d'%total, 'fail:%0d'% failed, "pass ratio:{0:.3f}%".format((total-failed)*100/total))
+      summary_msgs += "\n=============================================\n"
+      fd.write(summary_msgs)
+    err_rpt = os.path.join(self.workdir,error_report)
+#    self.rerun_from_err_rpt(err_rpt, self.regress) 
+    # when all done, return back to curdir
+    #os.chdir(self.currdir)
+    return True if failed == 0 else False
+
+  def check_jobs(self, report, jobs, max_jobs=1, verbosity=0):
+    if verbosity:
+      start_time = time.time()
+    while len(jobs) > max_jobs:
+      status = self.job_status(jobs,self.regress)
+      for test_done, test_msgs in list(status.items()):
+        report.write(test_msgs+'\n')
+        jobs.pop(test_done, None)
+      if self.regress:
+        time.sleep(self.doze)
+      if verbosity and self.regress:
+        curr_time = time.time()
+        if curr_time - start_time > 60: # mins
+          self.regress_time += 1
+          for key in jobs.keys():
+            print("Jobs Running ...->  "+key)
+          print('================================================================')
+          start_time = curr_time
+
+  def job_status(self, jobs, regress = False):
+    print("***************JOB STATUS IN**********************")
+    #print(json.dumps(jobs,sort_keys=False,indent=2))
+    status = {}
+    jobid = None;
+    for test, (proc,logdir,lsf_bsub_out) in list(jobs.items()):
+      #current location is workidr
+      msgs = ''
+      if not self.regress :
+        if self.regress_time > self.args.timeout:
+          print("Timeout! Kill Process:%s" % test)
+          proc.kill()
+        if proc.poll() == None:
+          continue
+        if proc.returncode != 0:
+          msgs = '{:<45} {:>30}'.format(test, 'NOT FINISHED')
+        else:
+          log = os.path.join(logdir,'run.log')
+          if os.path.isfile(log):
+            msgs = '{:<45} {:>30}'.format(test, self.check_log(log))
+        status[test] = msgs
+      else:
+        #lsf_bsub_out = proc.stdout.readline
+        #for info in iter(lsf_bsub_out,b''):
+        #  print(info)
+        #  info = info.decode()
+        #  info = info.rstrip('\n')
+        jobid_pattern = re.compile("Job\s\<(\d+)\>.*")
+        me = jobid_pattern.match(lsf_bsub_out)
+        jobid = me.group(1)
+        if self.regress_time > self.args.timeout:
+          print("Timeout! Kill Process:%s" % test)
+          os.system("bkill "+str(jobid))
+        if self.lsf_job_status(jobid):
+          log = os.path.join(logdir,'run.log')
+          if os.path.isfile(log):
+            msgs = '{:<45} {:>30}'.format(test, self.check_log(log))
+        else:
+          continue
+
+        status[test] = msgs
+
+    return status
+
+  def lsf_job_status(self,jobid):
+    content = os.popen("bjobs "+str(jobid)).read()
+    print("LSF Running Job ID:"+jobid)
+    #print(content)
+    content = str(content).split()
+    for info in content:
+      if re.match("EXIT",info):
+        return 1
+      elif re.match("DONE",info):
+        return 1
+      #else:
+      #  print("---"+info)
+    return 0
+sim = sim_env(args)
+sim.run()
+
