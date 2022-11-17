@@ -1,0 +1,147 @@
+#!/usr/bin/perl
+use 5.10.1;
+use Data::Dumper;
+$SIG{TERM}=$SIG{INT}=\&finish;
+open my $result_file,">regress_result.log";
+my $output_path = "./output/";
+my $cmd = "ls -alt $output_path  | awk -F\' \' \'{print \$9}\'";
+my @fo_all = `$cmd`;
+
+my %case_st;
+sub wfile{
+    my $st = shift;
+    print {$result_file} "$st:\n";
+    foreach(keys %case_st) {
+        print {$result_file} $_."\n" if ($case_st{$_} eq $st);
+    } 
+}
+
+my $regress_fo;
+while(<@fo_all>) {
+    if($_ =~ m/^regress/) {
+        chomp($_);
+        $regress_fo =$_;
+        last;
+    }
+};
+
+#$regress_fo = $ARGV[0] if @ARGV;
+say "REGRESS_FOLDER_FOUND: $regress_fo";
+$output_path =$output_path.$regress_fo;
+say "WORKING_PATH: $output_path";
+my $rtime_mins_arg = shift @ARGV;
+while(1) {
+    $cmd = "ls -alt $output_path  | awk -F\' \' \'{print \$9}\'";
+    @fo_all = `$cmd`;
+
+    my @case_fo = grep {$_} map {
+                  chomp($_);
+                  my $path = $output_path."/".$_."/run.log";
+                  #say $path;
+                  $path if (-e $path);
+                  } @fo_all;
+    my $rtime_mins;
+    if (not $rtime_mins_arg) {
+        $rtime_mins = 1;
+    } else {
+        $rtime_mins = $rtime_mins_arg;
+    }
+
+    while($rtime_mins>0) {
+        foreach(@case_fo) {
+            my $log_p = $_;
+            if($case_st{$log_p} =~ "(PASS|FAIL|FATAL)") {
+                next;
+            }
+            open my $log,"<$_";
+            my $case_st_flag = 0;
+            my $time = localtime();
+            while(<$log>) {
+                #say $_;
+                if($_ =~ m#UVM_FATAL\s*:\s*(\d*)#) {
+                    if($1 > 0) {
+                        #$case_st{$log_p} = "FATAL";
+                        #say "$log_p FATAL! $time";
+                        #$log_p =~ m#(.*)/run\.log#;
+                        #say "$1 cleaned!";
+                        #`rm -rf $1/*sim_check $1/rm_write* $1/*mem_init*`;
+                        $case_st_flag = "FATAL";
+                        #last;
+                    }
+                }
+                if($_ =~ m#UVM_ERROR\s*:\s*(\d*)#) {
+                    my $time = localtime();
+                    if($1 > 0) {
+                        $case_st_flag = "FAIL";
+                        #$case_st{$log_p} = "FAIL";
+                        #say "$log_p FAILED! $time";
+                    } else {
+                        $case_st_flag = "PASS" if not $case_st_flag;
+                        #$case_st{$log_p} = "PASS";
+                        #say "$log_p PASSED! $time";
+                        #$log_p =~ m#(.*)/run\.log#;
+                        #say "$1 cleaned!";
+                        #`rm -rf $1/*sim_check $1/rm_write* $1/*mem_init*`;
+                    }
+                }
+            }
+            if($case_st_flag eq "FATAL") {
+                $case_st{$log_p} = "FATAL";
+                say "$log_p FATAL! $time";
+                $log_p =~ m#(.*)/run\.log#;
+                say "$1 cleaned!";
+                `rm -rf $1/*sim_check $1/rm_write* $1/*mem_init*`;
+            } elsif ($case_st_flag eq "PASS") {
+                $case_st{$log_p} = "PASS";
+                say "$log_p PASSED! $time";
+                $log_p =~ m#(.*)/run\.log#;
+                say "$1 cleaned!";
+                `rm -rf $1/*sim_check $1/rm_write* $1/*mem_init*`;
+            } elsif($case_st_flag eq "FAIL") {
+                $case_st{$log_p} = "FAIL";
+                say "$log_p FAILED! $time";
+            } else {
+                $case_st{$log_p} = "NOT_FINISHED"
+            }
+            close($log);
+            #$case_st{$log_p} = "NOT_FINISHED" if not $flag;
+        }
+        @case_fo = grep {$case_st{$_} eq "NOT_FINISHED"} keys %case_st;
+        if (not @case_fo) {
+            say "ALL CASE FINISHED!";
+            last;
+        }
+        say $#case_fo," jobs still running";
+        $| = 1;
+        #for my $cnt (1..60) {
+        for my $cnt (1..60) {
+            #say "LOG CHECK GAP CNTDOWN:",(6-$cnt)*10," seconds";
+            print "\rlog check gap countdown:",(60-$cnt)," seconds ";
+            #print "\r[",sprintf( "%d:%d:%02d",(localtime)[2,1,0]),']';
+            sleep(1);
+        }
+        print "\n";
+        #say "DBG::",$rtime_mins;
+        $rtime_mins-- if defined $rtime_mins_arg;
+    }
+    #for my $cnt (1..60) {
+    for my $cnt (1..2) {
+        #say "LOG CHECK GAP CNTDOWN:",(6-$cnt)*10," seconds";
+        print "\rregress round gap countdown:",(60-$cnt)*10," seconds ";
+        #print "\r[",sprintf( "%d:%d:%02d",(localtime)[2,1,0]),']';
+        sleep(10);
+    }
+    print "\n";
+}
+
+sub finish{
+    wfile("PASS");
+    wfile("FAIL");
+    wfile("NOT_FINISHED");
+    wfile("FATAL");
+    say "---REGRESS_MON FINISH---  ./regress_result.log";
+    close($result_file);
+    exit 0;
+}
+
+finish();
