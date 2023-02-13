@@ -1,0 +1,121 @@
+tc = tc_sanity
+seed = 0
+pl = UVM_LOW
+udr =
+macro = 
+
+mode= .
+
+### UVM Library Setup ###
+#UVM_HOME = /tools/Lib/uvm/uvm-1.1d
+UVM_HOME =
+UVM_MACRO = +define+UVM_NO_DEPRECATED+UVM_OBJECT_MUST_HAVE_CONSTRUCTOR
+
+## UVM Options ##
+#ifdef UVM_HOME
+#UVM_OPTS = \
+#	+incdir+$(UVM_HOME)/src \
+#	$(UVM_HOME)/src/uvm_macros.svh \
+#	$(UVM_HOME)/src/uvm_pkg.sv \
+#	$(UVM_HOME)/src/dpi/uvm_dpi.cc  -CFLAGS -DVCS  
+#else
+#UVM_OPTS = -ntb_opts uvm 
+UVM_OPTS = 
+#endif
+
+## COMPILE OPTIONS ##
+LINK_OPTS = -LDFLAGS \
+			-Wl,-no-as-needed
+			
+TB_FILELIST = -f ./Project.f
+TB_CMP_COMMON_OPTIONS += +v2k \
+						  -sverilog \
+						  -j6 \
+						 -l ./$(mode)/cmp_log \
+						 -Mdir=./$(mode)/work/csrc \
+						 -o ./$(mode)/simv/simv \
+						 -override_timescale=1ns/1ns \
+						 +lint=TFIPC-L \
+						 -vcs_assert off \
+						 -debug_access+all \
+
+#						  -debug_access+r+line \
+
+
+TB_INC += +incdir+../th \
+		  +incdir+../env \
+		  +incdir+../agent \
+		  +incdir+../rm \
+		  +incdir+../checker \
+		  +incdir+../tc \
+		  +incdir+../ccode \
+		  +incdir+$(SGM_IP_DATA) \
+		  +incdir+$(SGM_IP_C) \
+		  +incdir+../itf
+
+TB_DEF += +define+SIM_RAM \
+
+#		  +define+DUMPFSDB 
+
+FSDB_PLI = -P $(NOVAS_HOME)/share/PLI/VCS/LINUX64/novas.tab \
+		   $(NOVAS_HOME)/share/PLI/VCS/LINUX64/pli.a
+## SIM OPTIONS ##
+TB_SIM_OPTIONS += -l ./$(mode)/log/$(tc)_$(seed).log \
+				  +UVM_VERBOSITY=$(pl) \
+				  +ntb_random_seed=${seed}  \
+				  +UVM_PHASE_TRACE \
+				  +UVM_OBJECTION_TRACE 
+
+
+FSDB_NAME = +fsdbfile+./$(mode)/wave/$(tc)_$(seed).fsdb
+
+TB_COV_OPTIONS += -cm line+cond+fsm \
+				  -cm_name $(tc)_$(seed) \
+				  -cm_dir ./$(mode)/cm_project/simv.cm
+
+TC_RUN = +UVM_TESTNAME=$(tc)
+
+udr_subst = $(subst +, +,$(udr))
+ 
+#FSDB_OPTS = +fsdb+autoflush
+FSDB_OPTS =
+
+
+#C code compile options
+#CFLAGS =  -dM -E
+#CFLAGS = "`pkg-config opencv --cflags --libs` \
+#		 -fopenmp -I/home/qinxuan/lib/libconfig++/include -L/home/qinxuan/lib/libconfig++/lib -lconfig++ \
+#		 -I/home/qinxuan/lib/boost/include -L/home/qinxuan/lib/boost/lib -lboost_filesystem" \
+#
+#LDFLAGS = -Wl,-no-as-needed $(CFLAGS)
+
+.PHONY: compile sim run clean clean_all gen verdi
+
+clean:
+	rm -rf ./$(mode)/work/* ./$(mode)/simv/* ./$(mode)/novas* ./$(mode)/cm_project/* ./$(mode)/nWave* ./$(mode)/cm_project 
+
+compile:
+	vcs $(TB_INC) $(UVM_OPTS) $(TB_CMP_COMMON_OPTIONS) $(UVM_MACRO) $(LINK_OPTS) $(FSDB_PLI) $(TB_DEF) $(TB_FILELIST) $(macro)  -CFLAGS $(CFLAGS)  -LDFLAGS $(CFLAGS)  -CFLAGS "-fPIC -shared" 
+
+sim:
+	./$(mode)/simv/simv $(TC_RUN) $(TB_SIM_OPTIONS) $(FSDB_NAME) $(TB_COV_OPTIONS) $(FSDB_OPTS) $(udr_subst)
+
+run:clean compile sim
+
+
+clean_all:
+	rm -rf ./$(mode)/work/* ./$(mode)/simv/* ./$(mode)/novas* ./$(mode)/cm_project ./$(mode)/log/* ./$(mode)/nWave* ./$(mode)/wave/* ./$(mode)/*_cmp_log
+
+gen:
+	$(shell test -d ./$(mode)/work/csrc  || mkdir -p ./$(mode)/work/csrc -m 755)
+	$(shell test -d ./$(mode)/simv       || mkdir -p ./$(mode)/simv -m 755)
+	$(shell test -d ./$(mode)/log        || mkdir -p ./$(mode)/log -m 755)
+	$(shell test -d ./$(mode)/cm_project || mkdir -p ./$(mode)/cm_project -m 755)
+	$(shell test -d ./$(mode)/wave       || mkdir -p ./$(mode)/wave -m 755)
+	@echo "Folder create finish!"
+
+verdi:
+	verdi -f ./Project.f -nologo &
+
+
+

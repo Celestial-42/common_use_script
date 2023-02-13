@@ -1,0 +1,792 @@
+SHELL := /bin/bash
+#-------------------------------------------------------------------#
+#   This confidential and proprietary software may be used only as  #
+# authorized by a licensing agreement from Orbbec Inc.              #
+#   In the event of publication, the following notice is applicable:#
+#                                                                   #
+#     (C)COPYRIGHT 2013 ORBBEC INC. ALL RIGHTS RESERVED.            #
+#                                                                   #
+#   The entire notice above must be reproduced on all authorized    #
+# copies.                                                           #
+#-------------------------------------------------------------------#
+# File	: Makefile                                                  #
+# Author      : Kuiyin (Wenson Wu)                                  #
+# Date	: 09/02/2020                                                #
+# Version     : 2.0                                                 #
+# Description : The makefile for Verilog + SystemVerilog Simulation,#
+#               with UVM Verification Methodology, base on Synopsys #
+#               VCS+Debussy Playform.                               #
+#-------------------------------------------------------------------#
+# Modification History:	                                            #
+# Date       | By     | Version | Change Description                #
+# ----------- -------- --------- -----------------------------------#
+# 01/10/2020 | Kuiyin |   1.0   | Creat Makefile.                   #
+# 01/19/2020 | Kuiyin |   1.1   | Add comment & help.               #
+# 01/20/2020 | Kuiyin |   1.2   | Add Synopsys template.            #
+# 01/22/2020 | Kuiyin |   1.3   | Add TCL script, Verdi & DVE setup #
+#            |        |         | updated.                          #
+# 03/04/2020 | Kuiyin |   1.4   | Enable Macro and script control.  #
+# 03/14/2020 | Kuiyin |   1.5   | Add help command detail.          #
+# 03/17/2020 | Kuiyin |   1.6   | Add Testcase, Directory, Color    #
+#            |        |         | options; Update help messages.    #
+# 03/19/2020 | Kuiyin |   1.7   | Add parameter passing.            #
+# 03/21/2020 | Kuiyin |   1.8   | Add output directories;           #
+#            |        |         | Enable comments in filelist.      #
+# 03/23/2020 | Kuiyin |   1.9   | Add simulating in Verdi+VCS.      #
+# 04/08/2020 | Kuiyin |   1.10  | Add clean options for output.     #
+# 04/29/2020 | Kuiyin |   1.11  | Add DPI macro control.            #
+# 05/06/2020 | Kuiyin |   1.12  | Split SV CMP & SIMV & UVM options.#
+# 05/12/2020 | Kuiyin |   1.13  | Add Coverage generation options.  #
+# 06/04/2020 | Kuiyin |   1.14  | Update log & color control.       #
+# 06/29/2020 | Kuiyin |   1.15  | Update paths & portability.       #
+# 07/01/2020 | Kuiyin |   1.16  | Update filelist & output DIRs.    #
+# 07/02/2020 | Kuiyin |   1.17  | Update seed & FSDB & DUMP control.#
+# 07/07/2020 | Kuiyin |   1.18  | Update FSDB & DUMP & VPD control. #
+# 09/02/2020 | Kuiyin |   2.0   | Add Spyglass commands.            #
+#-------------------------------------------------------------------#
+
+###############################
+### Working Directory Setup ###
+###############################
+# Your work directory #
+WORK_HOME = $(shell pwd)
+ifndef RTL_DIR
+#RTL_DIR = ../../01-RTL
+RTL_DIR = ./rtl
+endif
+export SRC_DIR = $(RTL_DIR)
+#RTL_DIR = $(shell dirname "$(WORK_HOME)")/01-RTL
+
+
+#########################
+### UVM Library Setup ###
+#########################
+ifndef UVM_HOME
+	# Default using UVM-1.1d Version
+	## Using the UVM-1.1d in VCS
+	UVM_HOME = $(VCS_HOME)/etc/uvm-1.1
+	UVM_VER = umv-1.1
+	UVM_SUB_VER = d
+else
+## Redefine the UVM_HOME location
+## Using the UVM-1.1d in VCS instead of user UVM library
+	#UVM_HOME = /tools/Lib/uvm/uvm-1.1d
+	#UVM_HOME = $(VERDI_HOME)/etc/uvm-1.1
+	#UVM_HOME = $(VCS_HOME)/etc/uvm-1.2
+	UVM_VER = $(UVM_HOME)
+	UVM_SUB_VER = 
+endif
+UVM_VERBOSITY = UVM_LOW
+UVM_DEFINES = UVM_NO_DEPRECATED+UVM_OBJECT_MUST_HAVE_CONSTRUCTOR
+#include $(UVM_HOME)/examples/Makefile.vcs
+## UVM Check Parameters ##
+TEST = /usr/tmp/test
+N_ERRS = 0
+N_FATALS = 0
+
+################################################
+### Verilog Design Environment & Macro Setup ###
+################################################
+## DUT Instance Name ##
+ifndef DUT
+DUT = dut
+endif
+#DUT = my_dut
+
+## TestBench Module Name ##
+#ifndef TOP_TB
+#TOP_TB = top_tb
+#endif
+#TOP_TB = top_tb
+
+## Your File List Name ##
+ifndef FILELIST
+FILELIST = filelist*.f
+endif
+#FILELIST = filelist_uvm.f
+
+## Your Design Timescale ##
+ifndef TIMESCALE
+TIMESCALE = 100ps/10ps
+endif
+
+## Enable/Disable Your Macro with define/ndefine ##
+## If Enable, uncomment the USER_MARCO definition;if disable, comment it ##
+USER_MACRO = 1
+## If Enable, uncomment the USER_SCRIPT definition;if disable, comment it ##
+USER_SCRIPT = 1
+## If Enable, user can define the output directories ##
+DIR_DEF = 1
+## If Enable, user can use DPI in SV
+#EN_CMP_DPI = 1
+#EN_SIM_DPI = 1
+## If Enable, user can generage Coverage report with VCS ##
+#EN_COV = 1
+
+#############################
+### TestCase List Options ###
+#############################
+## When you have multiple testcase, add the parameter "TC=<Class Name of Your TestCase>" ###
+export BUILD_LOG = build.log
+
+## Define your random seed
+#SEED = 
+ifdef SEED
+ifdef TC
+export TC_SEED = $(TC)_$(SEED)
+else
+export TC_SEED = $(SEED)
+endif
+else
+ifdef TC
+export TC_SEED = $(TC)
+else
+#TC_SEED =
+endif
+endif
+
+## Define testcase name
+#ifndef $(filter UVM_TESTNAME=%,$(MAKECMDGOALS))
+ifdef TC_SEED
+TESTCASE_OPTS = +UVM_TESTNAME=$(TC)
+export WAV_RESULT = $(TC_SEED)
+#BUILD_LOG = build_$(TC).log
+SIMV_LOG = simv_$(TC_SEED).log
+else
+#TESTCASE_OPTS = $(filter +UVM_TESTNAME=%,$(MAKECMDGOALS))
+export WAV_RESULT = simv_all
+#BUILD_LOG = build.log
+SIMV_LOG = simv.log
+endif
+
+#HARNESS_TOP = $(PROGRAM_PATH)/top.sv
+#TOP = $(HARNESS_TOP) $(TEST_TOP)
+#DUT_SIM_FILE = $(TEST_TOP) $(DUT) $(HARNESS_TOP)
+
+#################################
+### Output Result Directories ###
+#################################
+## Define the directories where VCS output the result files ##
+ifdef DIR_DEF
+export OUT_DIR = ./output
+CMP_LOG_DIR = $(OUT_DIR)/logs
+ifdef EN_COV
+export COV_DIR = $(OUT_DIR)/coverage
+endif
+ifdef TC_SEED
+export SIM_LOG_DIR = $(OUT_DIR)/$(TC_SEED)/logs
+export WAV_DIR = $(OUT_DIR)/$(TC_SEED)/waveform
+else
+export SIM_LOG_DIR = $(OUT_DIR)/logs
+export WAV_DIR = $(OUT_DIR)/waveform
+endif
+endif
+
+## Define "clean" command option
+## To enable/disable the clean option, uncomment/comment it
+# If/ifnot clean ./output
+#OUT_CLN = $(OUT_DIR)
+# If/ifnot clean ./logs
+#LOG_CLN = $(LOG_DIR)
+# If/ifnot clean ./coverage
+#COV_CLN = $(COV_DIR)
+# If/ifnot clean ./waveform
+WAV_CLN = $(WAV_DIR)
+
+#############################################
+### User Marco Control Details Definition ###
+#############################################
+### Define User Macro if your .v/.sv/.vhd source code using macros ###
+## Enable/Disable Ramdon seed by defining RAMDON ##
+ifdef USER_MACRO
+## Define your Macro ##
+#USER_MACRO_1 = 3
+#USER_MACRO_2 = 4
+#USER_MACRO_3 = 5
+#export TEST_MACRO = 
+## Add your Macro ##
+#USER_MACRO_ADD += +define+USER_MACRO_1=$(USER_MACRO_1)
+#USER_MACRO_ADD += +define+USER_MACRO_2=$(USER_MACRO_2)
+#USER_MACRO_ADD += +define+USER_MACRO_3=$(USER_MACRO_3)
+USER_MACRO_ADD += +define+TEST_MACRO=$(TEST_MACRO)
+endif
+
+## Your TCL/UCLI/DO Scripts (if enable) ##
+ifdef USER_SCRIPT
+## Your scripts name
+TCL_SCRIPT = ./env/*.tcl
+endif
+
+########################
+### Regression Setup ###
+########################
+
+
+
+#############################
+### User SV Library Setup ###
+#############################
+## SystemVerilog Options ##
+CMP_SV_OPTS += -sverilog -CFLAGS -DVCS \
+	$(UVM_OPTS)
+#CMP_SV_OPTS += -cnst_impl_for_packed_union=disable
+SIM_SV_OPTS += $(UVM_OPTS)
+USER_SIM_OPTS += $(sim_opts)
+USER_CMP_OPTS += $(cmp_opts)
+USER_VERDI_OPTS += $(verdi_opts)
+
+## C/C++/SystemC & SV DPI Compile Library setup ##
+ifdef EN_CMP_DPI
+DPI_LIB_DIR = ./common/RefModel/CModel
+SRCS_DIR = ./common/RefModel/CModel/Ncnn_Obnn_Linux_x64_v0.2.2/example
+# Source Files Directories
+DPI_SRC = $(DPI_LIB_DIR)/basic_mul.cpp
+# Share Objects Files Directories
+DPI_SHR_DIR = $(DPI_LIB_DIR)/share
+SHR_OBJS_DIR ?= $(DPI_SHR_DIR)
+# Share Objects Libraries Files
+DPI_SHR_OBJ += $(DPI_SHR_DIR)/basic_mul.so
+DPI_SHR_OBJ += $(DPI_SHR_DIR)/dpi.so
+# Add DPI to SV options
+CMP_SV_OPTS += $(DPI_SHR_OBJ)
+endif
+
+## User SV Simulation Libraries directory Setup ##
+ifdef EN_SIM_DPI
+# define where to search the libraires #
+#SV_LIB_DIR = ./RefModel/Ncnn_Obnn_Linux_x64_v0.2.2/lib
+SV_LIB_DIR = ./common/RefModel/CModel/share
+SHR_OBJS_DIR ?= $(SV_LIB_DIR)
+SIM_SV_OPTS += -sv_root $(SV_LIB_DIR)
+# Add Single User SV Libraries #
+#SV_LIB = dpi
+#SIM_SV_OPTS += -sv_lib $(SV_LIB)
+# Add SV Library List File #
+# Define where is the Lib-list file #
+LIB_LIST_DIR = ./common/RefModel/CModel
+SV_LIB_LIST = -sv_liblist $(LIB_LIST_DIR)/sv_lib_list.file
+SIM_SV_OPTS += $(SV_LIB_LIST)
+endif
+
+################################################
+### Verification Framework Environment Setup ###
+################################################
+#PROGRAM_PATH = ./env
+#PROGRAM_TOP = $(PROGRAM_PATH)/test.sv
+#PACKAGE_PATH = ./packages
+#PACKAGES = $(PACKAGE_PATH)/all_user_pkg.sv
+#MODULE_CTRL = ./common/dut_def.v \
+		./common/dut_reg_def.v
+#TEST_TOP = $(MODULE_CTRL) $(PACKAGES) $(PROGRAM_TOP)
+
+###############################
+### Checking Message Define ###
+###############################
+# Checking the VCS version #
+VCS_VERSION = $(shell vcs -id > vcs_version ; grep "Compiler version" vcs_version | awk -F " " '{print $$5}')
+#This variable contains all the UVM-1.0 supported VCS tool versions.
+UVM10_SUPP_VCS_VERSNS = E-2011.03
+#VERBOSITY = de
+#MODE      = NORMAL # Default configuration record-replay mode set to NORMAL
+#UVM_TEST  = TEST_NAME
+# Checking UVM Version by Default
+UVM_VERS_WARNING = 1
+
+### VCS and UVM checking ###
+ifdef VCS_HOME
+ ifneq ($(VCS_VERSION),$(filter $(VCS_VERSION),$(UVM10_SUPP_VCS_VERSNS)))
+  VCS_VERS_WARNING = 1
+ endif
+ ifndef UVM_HOME
+  UVM_OPT_CHK = -ntb_opts
+ else
+  UVM_OPT_CHK = +incdir+$(UVM_HOME)/src $(UVM_HOME)/src/uvm.sv $(UVM_HOME)/src/uvm_pkg.sv ${UVM_HOME}/src/uvm_macros.svh ${UVM_HOME}/src/dpi/uvm_dpi.cc
+#  UVM_OPT_CHK = +incdir+$(VERDI_HOME)/etc/uvm/src $(VERDI_HOME)/etc/uvm/src/uvm.sv $(VERDI_HOME)/etc/uvm/src/uvm_pkg.sv $(VERDI_HOME)/etc/uvm/dpi/uvm_dpi.cc
+ endif
+else
+ ERR_STATUS = 1
+endif
+
+##############################################
+### VCS Compile & Simulation Options Setup ###
+##############################################
+## Make Command Add Parameter Options
+MK_PARA_OPTS = $(filter-out $@,$(MAKECMDGOALS))
+
+## Test Bench Options ##
+RAND_OPTS += +ntb_random_seed=$(SEED)
+#	+ntb_random_seed_automatic
+
+## Linker Options ##
+LINK_OPTS = \
+	-LDFLAGS \
+	-Wl,-no-as-needed
+#	+lint=all,noVCDE
+# 如需使用DPI，请打开lint=all选项
+## Debug Options ##
+DEBUG_OPTS = \
+	-kdb -lca \
+	-debug_all
+#	-debug_access+all
+#	-debug_all
+#	-debug_access+all+pp
+#	-debug_pp
+#	-debug_access/all/pp
+## UVM Options ##
+UVM_OPTS = \
+	$(UVM_OPT_CHK)
+#	仿真器集成的UVM库时的配置项
+#	+UVM_NO_RELNOTES \
+#	+UVM_VERDI_TRACE="UVM_AWARE+RAL+TLM+MSG+HIER+PRINT" \
+#	+UVM_VERDI_TRACE \
+#	+UVM_LOG_RECORD \
+#	+UVM_TR_RECORD \
+
+## Verdi & NOVAS Options ##
+NOVAS_OPTS = \
+	-P $(NOVAS_HOME)/share/PLI/VCS/LINUX64/novas.tab \
+	$(NOVAS_HOME)/share/PLI/VCS/LINUX64/pli.a
+#	-rdynamic
+## FSDB & Dump Options ##
+
+#DUMP = 1
+ifdef DUMP
+DUMP_OPTS = \
+	+vcs+dumpvars \
+	+vcs+flush+all
+#	+vcs+dumpvars
+endif
+
+#FSDB = 1
+ifdef FSDB
+export FSDB_OPTS = \
+	+fsdbfile+$(WAV_DIR)/$(WAV_RESULT).fsdb \
+	+define+DUMP_FSDB \
+	+fsdb+autoflush
+endif
+
+#VPD = 1
+ifdef VPD
+VPD_OPTS = \
+	+define+DUMP_VPD \
+	+vpdfile+$(WAV_DIR)/$(WAV_RESULT).vpd
+endif
+
+## UCLI & TCL Options ##
+ifdef USER_SCRIPT
+UCLI_OPTS += \
+	-ucli -i ./$(TCL_SCRIPT)
+#	-ucli -ucli2Proc -lca
+endif
+
+## Coverage Options ##
+ifdef EN_COV
+COV_OPTS = -cm line+fsm+tgl+cond \
+	-cm_log $(CMP_LOG_DIR)/cm.log
+#	line+cond+tgl+fsm+branch+assert
+endif
+
+######################################################
+### Spyglass Lint & CDC & Constraint options setup ###
+######################################################
+## This part using TCL scripts to setup & control Spyglass
+PRJ_NAME = top
+
+# Lint Level define
+LINT_LV_NAME = block
+#LINT_LV_NAME = soc
+
+# Lint Object define
+LINT_OBJ = rtl
+#LINT_OBJ = netlist
+
+# Spyglass common TCL scripts location directories
+ifndef SG_COMMON
+SG_COMMON = ./common
+endif
+BASE_LINT = base_run.tcl
+RTL_LINT = $(LINT_OBJ)_lint.tcl
+CDC_LINT = $(LINT_OBJ)_cdc.tcl
+SGDC = $(PRJ_NAME)_$(LINT_OBJ)_lint.sgdc
+AWL = $(PRJ_NAME)_$(LINT_OBJ)_lint.awl
+SG_SCRIPT = $(SG_COMMON)/$(BASE_LINT)
+
+
+##################################
+### Synopsys Environment setup ###
+##################################
+
+## Compilation ##
+VCS =	vcs \
+	+incdir+./ \
+	-full64 \
+	$(CMP_SV_OPTS) \
+	-timescale=$(TIMESCALE) \
+	+vpi \
+  +define+ASSERT_ON \
+	-l $(CMP_LOG_DIR)/$(BUILD_LOG) \
+	$(DEBUG_OPTS) \
+	$(LINK_OPTS) \
+	$(DUMP_OPTS) \
+	$(FSDB_OPTS) \
+	$(VPD_OPTS) \
+	$(COV_OPTS) \
+	+define+$(UVM_DEFINES) \
+	$(USER_MACRO_ADD) \
+	$(USER_CMP_OPTS) \
+	$(NOVAS_OPTS) \
+	./ddr_file_compare_wrap.c \
+	-file $(FILELIST)
+
+## Simulation ##
+SIMV =	./simv \
+	$(DUMP_OPTS) \
+	$(FSDB_OPTS) \
+	$(VPD_OPTS) \
+	$(UCLI_OPTS) \
+	$(RAND_OPTS) \
+	$(TESTCASE_OPTS) \
+	$(SIM_SV_OPTS) \
+	$(COV_OPTS) \
+	$(USER_MACRO_ADD) \
+	$(USER_SIM_OPTS) \
+	-l $(SIM_LOG_DIR)/$(SIMV_LOG)
+#	-a $(LOG_DIR)/all_simv.log
+#	$(UCLI_OPTS)
+
+## Coverage Report Generation ##
+URG  = 	urg -full64 -dir simv.vdb \
+	-report $(COV_DIR) \
+	-log $(CMP_LOG_DIR)/coverage.log \
+	-format both
+#	-format <text|html|both>
+#	-metrics line+fsm+branch+condition
+
+##
+##UVM_CHECK = \
+##	@$(TEST) \( `grep -c 'UVM_ERROR :	$(N_ERRS)' $(SIMV_LOG)` -eq 1 \) -a \
+##		 \( `grep -c 'UVM_FATAL :	$(N_FATALS)' $(SIMV_LOG)` -eq 1 \)
+##
+
+## Spyglass lint ##
+SPYGLASS = sg_shell < $(SG_SCRIPT)
+
+################################
+### SystemC/C/C++ Make Setup ###
+################################
+### Include Definition Makefile ###
+## SystemC ##
+#CMODEL_DIR = $(WORK_HOME)/RefModel/Ncnn_Obnn_Linux_x64_v0.2.2/example
+#include $(CMODEL_DIR)/Makefile.systemc
+
+
+#####################################
+### Make Commmand Parameter Setup ###
+#####################################
+
+.PHONY:	all check comp sim gui cov simverdi verdi gcc sg clean cleanall cleansg help
+
+all:	check comp sim
+
+### Synopsys VCS/Verdi Compile & Simulation Command ###
+
+check:
+#ifndef bashrc_status
+ifneq (${bashrc_status},0)
+	@echo -e "##################### BASHRC WARNING ##########################"
+	@echo -e " WARNING: Verification Environment's <*.bashrc> not setup yet! " 
+#	@echo -e "          bashrc_status is $(env ${bashrc_status})  "
+	@echo -e " If you want to run the regression script, "
+	@echo -e " please run the following command first to setup ENV: "
+	@echo -e "          ${RED}source source_cfg ${RES} "
+	@echo -e "###############################################################"
+endif
+ifdef VCS_VERS_WARNING
+	@echo -e "##################### MAKE WARNING ############################"
+	@echo -e " VCS version is ${VCS_VERSION} "
+	@echo -e " WARNING: VCS version should be atleast E-2011.03 or greater "
+	@echo -e "###############################################################"
+endif
+ifdef UVM_VERS_WARNING
+	@echo -e "####################### UVM CHECK #############################"
+	@echo -e " UVM version is ${UVM_VER}${UVM_SUB_VER} "
+	@echo -e " UVM_HOME is ${UVM_HOME} "
+	@echo -e "###############################################################"
+endif
+ifdef ERR_STATUS
+	@echo -e "##################### MAKE ERROR ##############################"
+	@echo -e "  ${RED}ERROR : VCS_HOME is not set${RES}"
+	@echo -e "  Please set VCS_HOME to run this Makefile"
+	@echo -e "###############################################################"
+endif
+ifdef DUT_HOME_ERR
+	@echo -e "##################### MAKE ERROR ##############################"
+	@echo -e "  ${RED}ERROR : DUT_HOME is not set${RES}"
+	@echo -e "  Please set DUT_HOME to run this Makefile"
+	@echo -e "###############################################################"
+endif
+ifdef DIR_DEF
+ifdef OUT_DIR
+	@mkdir -p $(OUT_DIR)
+endif
+ifdef SIM_LOG_DIR
+	@mkdir -p $(SIM_LOG_DIR)
+endif
+ifdef CMP_LOG_DIR
+	@mkdir -p $(CMP_LOG_DIR)
+endif
+ifdef COV_DIR
+	@mkdir -p $(COV_DIR)
+endif
+ifdef WAV_DIR
+	@mkdir -p $(WAV_DIR)
+endif
+endif
+
+
+build : check
+	@echo "NOTE::******************************************************";
+	@echo "NOTE: Making env build ... ";
+	@echo "NOTE::******************************************************";
+	$(VCS) $(COMPILE_OPTS)
+
+run :	check
+	@echo "NOTE::******************************************************";
+	@echo "NOTE: Running test case ... ";
+	@echo "NOTE::******************************************************";
+	$(SIMV) $(RUN_OPTS)
+
+comp:	check
+	@echo "***************************************************************"
+	@echo "***                     VCS Compiling                       ***"
+	@echo "***************************************************************"
+	$(VCS)
+	@echo "***************************************************************"
+	@echo "***                     VCS Compilation End                 ***"
+	@echo "***************************************************************"
+
+sim:	check
+	@echo "***************************************************************"
+	@echo "***                     VCS Simulating                      ***"
+	@echo "***************************************************************"
+	$(SIMV)
+	@echo "***************************************************************"
+	@echo "***                   VCS Simulation End                    ***"
+	@echo "***************************************************************"
+#	$(UVM_CHECK)
+
+simverdi:	check
+	@echo "***************************************************************"
+	@echo "***                  VCS+Verdi Simulating                   ***"
+	@echo "***************************************************************"
+	$(SIMV) \
+	-gui=verdi \
+	-nologo &
+	@echo "***************************************************************"
+	@echo "***                VCS+Verdi Simulation End                 ***"
+	@echo "***************************************************************"
+
+verdi:	check
+	verdi \
+	-file $(FILELIST) \
+	-sv \
+  +define+ASSERT_ON \
+	$(USER_VERDI_OPTS) \
+	-nologo &
+	#-top $(DUT) \
+	#-ssf $(WAV_DIR)/$(WAV_RESULT).fsdb \
+	#-dbdir ./simv.daidir \
+#加载./simv.daidir和加载-ssf *.fsdb具有同样的作用
+#前者跟可执行文件.simv为compile编译同时产生的，后者根据fsdbDump的控制生成
+
+gui:	comp
+	./simv \
+	-gui &
+#	dve -dbdir ./simv.daidir &
+#	dve -vpd $(DUT).vpd &
+
+cov:	
+	@echo "***************************************************************"
+	@echo "***              Generating Coverage Report                 ***"
+	@echo "***************************************************************"
+	$(URG)
+	@echo "***************************************************************"
+	@echo "***              Coverage Report Generated                  ***"
+	@echo "***************************************************************"
+
+### Spyglass Command ###
+
+sg:
+	@echo "***************************************************************"
+	@echo "***                   Running Spyglass                      ***"
+	@echo "***************************************************************"
+	$(SPYGLASS)
+	@echo "***************************************************************"
+	@echo "***                   Spyglass Lint End                     ***"
+	@echo "***************************************************************"
+
+lints_base:
+	sg_shell -t $(SG_COMMON)/$(BASE_SCRIPT)
+rtl_lint:
+	sg_shell -t $(SG_COMMON)/rtl_lint_flow.tcl
+#ifeq ($(LINT_LV),top)
+#	sg_shell -t $(SG_COMMON)/rtl_lint_flow.tcl
+#else
+#	cp $(SG_COMMON)/rtl_lint_flow.tcl $(SG_COMMON)/$(LINT_LV)_lint_flow.tcl
+#	cp $(SG_COMMON)/block_lint.sgdc $(SG_COMMON)/$(LINT_LV)_rtl_lint.sgdc
+#	cp $(SG_COMMON)/isp100_rtl_lint.awl $(SG_COMMON)/$(LINT_LV)_rtl_lint.awl
+#	sed -i '/isp100/s/isp100/$(LINT_LV)/g'  $(SG_COMMON)/$(LINT_LV)_lint_flow.tcl
+#	sed -i '/isp100/s/isp100/$(LINT_LV)/g'  $(SG_COMMON)/$(LINT_LV)_rtl_lint.sgdc
+#	sg_shell -t $(SG_COMMON)/$(LINT_LV)_lint_flow.tcl
+#endif
+
+rtl_cdc:
+	sg_shell -t $(SG_COMMON)/rtl_cdc_flow.tcl
+netlist_lint:
+	sg_shell -t $(SG_COMMON)/netlist_lint_flow.tcl
+netlist_cdc:
+	sg_shell -t $(SG_COMMON)/netlist_cdc_flow.tcl
+
+
+### SystemC/C/C++ Compile Command ###
+
+ifdef EN_CMP_DPI
+gcc:
+	g++ -Wall -m64 -g -fPIC -I$(VCS_HOME)/include $(DPI_SRC) -shared -o $(DPI_SHR_OBJ)
+endif
+
+### Clean Commmand ###
+
+# Default clean
+clean:cleansg
+	rm -f *.dump *fsdb *.vpd *.log vcs_version vc_hdrs.h ucli.key vfastLog
+	rm -rf *~ core csrc simv* urg* novas.* verdiLog DVEfiles *.daidir
+ifdef DIR_DEF
+ifdef OUT_DIR
+ifdef OUT_CLN
+	rm -rf $(OUT_DIR)/*
+endif
+endif
+ifdef LOG_DIR
+ifdef LOG_CLN
+	rm -rf $(CMP_LOG_DIR)/*
+	rm -rf $(SIM_LOG_DIR)/*
+endif
+endif
+ifdef COV_DIR
+ifdef COV_CLN
+	rm -rf $(COV_DIR)/*
+endif
+endif
+ifdef WAV_DIR
+ifdef WAV_CLN
+	rm -rf $(WAV_DIR)/*
+endif
+endif
+endif
+
+cleanall:clean clean_c cleanregress
+	rm -rf $(OUT_DIR)
+	rm -rf $(CMP_LOG_DIR)
+	rm -rf $(SIM_LOG_DIR)
+	rm -rf $(COV_DIR)
+	rm -rf $(WAV_DIR)
+
+cleanregress:
+	rm -rf compile
+	rm -rf run
+	rm -rf coverage
+	rm -rf report
+	rm -f run_verdi
+	rm -f run.log
+	rm -f build.log
+	rm -rf .__solver_cache__
+
+action:
+	@echo action $(MK_PARA_OPTS)
+
+%:
+	@:
+
+help:
+	@echo -e "**************************************************************"
+	@echo -e "***                  Makefile V1.18 Help                   ***"
+	@echo -e "**************************************************************"
+	@echo -e "* Usage : Synopsys VCS+Verdi Simualtion.                     *"
+	@echo -e "*============================================================*"
+	@echo -e "  ${YELLOW}make${RES}     	: Compile and Run the simulation, then dump FSDB files. "
+	@echo -e "                                                              "
+	@echo -e "  Available targets:                                          "
+	@echo -e "  ${YELLOW}make help${RES} 	: To see the Help.              "
+	@echo -e "  ${YELLOW}make clean${RES}	: Remove simulation generated files/directories, but without result directories themselves. "
+	@echo -e "  		User can choose whether to clean the output directories by enable/disable the macros in Makefile. "
+	@echo -e "  		Default clean : ${RED} $(LOG_CLN) $(WAV_CLN) $(COV_CLN) $(OUT_CLN) ${RES}"
+	@echo -e "  ${YELLOW}make cleanall${RES}	: Remove all simulation generated files/directories. "
+	@echo -e "  ${YELLOW}make comp${RES} 	: Compile the All files in filelist.f             "
+	@echo -e "  ${YELLOW}make sim${RES} 	: Run the simulation with VCS.                    "
+	@echo -e "  ${YELLOW}make simverdi${RES} : Run the simulation with VCS linking with Verdi. "
+	@echo -e "  ${YELLOW}make verdi${RES}	: Open the default dump Database with Verdi.      "
+	@echo -e "  ${YELLOW}make gui${RES}  	: Compile & Simulate & Open GUI of VCS.           "
+	@echo -e "  ${YELLOW}make cov${RES}  	: Generate Coverage Report in directory $(RED)$(COV_DIR)$(RES)"
+	@echo -e "  ${YELLOW}make check${RES}	: Start the Self-check of VCS.                    "
+	@echo -e "  ${YELLOW}make gcc${RES}	: Compile C/C++ for DPI usage. This option required to modify the Makefile to control C/C++ source file."
+	@echo -e "  ----------------------------------------------------------- "
+	@echo -e "  Optional Arguments:                                         "
+	@echo -e "  ${YELLOW}TC=<TestCase Name>${RES}: Pass the UVM testcase name, to specificate the running testcase in base test of UVM. "
+	@echo -e "  		For example, ${YELLOW}make TC=my_case0${RES}, or ${YELLOW}make sim TC=my_case1${RES}. "
+	@echo -e "  ${YELLOW}SEED=<Random Seed Num.>${RES}: Pass the random seed number to VCS simulator. "
+	@echo -e "  		For example, ${YELLOW}make SEED=1${RES}, or ${YELLOW}make sim TC=my_case1 SEED=2${RES}. "
+	@echo -e "  ${YELLOW}FILELIST=<FILELIST Name>${RES}: Pass the filelist name, to specificate the source codes including RTL & SV. "
+	@echo -e "  ${YELLOW}DUMP=<Whatever>${RES}: VCS simulator dump the waveform of DVE default format. It is disable by default."
+	@echo -e "  ${YELLOW}FSDB=<Whatever>${RES}: VCS simulator dump the waveform of *.fsdb format. It is disable by default."
+	@echo -e "  		The FSDB file name depends whether user defines TC/SEED or not. By default, the FSDB waveform name is ${WAV_RESULT}."
+	@echo -e "  ${YELLOW}VPD=<Whatever>${RES}: VCS simulator dump the waveform of VPD format. It is disable by default."
+	@echo -e "  ----------------------------------------------------------- "
+	@echo -e "  Output Result Directories:                                  "
+	@echo -e "  ${RED}$(SIM_LOG_DIR)${RES}	: Log directory, storing build & simulation logs. "
+	@echo -e "            	  	If defined TC or SEED, generated testcase/seed dirctories standalone and storing simulation logs in sub-dirctory;  "
+	@echo -e "            	  	build log still storing in ${RED}$(CMP_LOG_DIR)${RES}. "	
+	@echo -e "  ${RED}$(WAV_DIR)${RES}	: FSDB/VPD/VCD waveform & database.             "
+	@echo -e "            	  	If defined TestCase, generated testcase waveform alone; "
+	@echo -e "            	  	if not, cover the default waveform.           "
+	@echo -e "  ${RED}$(COV_DIR)${RES}	: Coverage output report.                       "
+	@echo -e "  ${RED}$(OUT_DIR)${RES}	: Output the other temporary files.             "
+	@echo -e "  ----------------------------------------------------------- "
+	@echo -e "  ${RED}Hint${RES}: Remember to add ${PINK}fsdbDumpfile & fsdbDumpvars${RES} functions in your testbench if you want to dump FSDB waveform."
+	@echo -e "  ${BFLASH}To be continue... O(∩_∩)O${RES}                                   "
+	@echo -e "**************************************************************"
+
+## Include C++ Makefile ##
+ifdef EN_CMP_DPI
+include ./common/RefModel/CModel/Ncnn_Obnn_Linux_x64_v0.2.2/example/Makefile
+endif
+
+## Color Definition Macro ##
+# Red Bold
+RED=\033[1;31m
+# Green Bold
+GREEN=\033[1;32m
+# Yello Bold
+YELLOW=\033[1;33m
+# Blue Bold
+BLUE=\033[1;34m
+# Pink Bold
+PINK=\033[1;35m
+# HighLight
+HL=\033[01m
+# UnderLine
+UL=\033[04m
+# Yellow Flash
+YFLASH=\033[33;05m
+# Blue Flash
+BFLASH=\033[34;05m
+# Invert
+INV=\033[07m
+# Blank
+BLANK=\033[08m
+# Reset & Clean All Font Property
+RES=\033[0m
+
+####################   **************************
+### Makefile End ###   * Best Wishes & Enjoy It *
+####################   **************************
